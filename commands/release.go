@@ -460,7 +460,7 @@ func downloadRelease(cmd *Command, args *Args) {
 				defer func() { <-sem }()
 				err := downloadReleaseAssetWithRetry(a, gh, 2)
 				if err != nil {
-					errCh <- fmt.Errorf("%s: %w", a.Name, err)
+					errCh <- fmt.Errorf("%s: %v", a.Name, err)
 					return
 				}
 				mu.Lock()
@@ -492,15 +492,16 @@ func downloadReleaseAssetWithRetry(asset github.ReleaseAsset, gh *github.Client,
 	var err error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			ui.Printf("Retrying %s (attempt %d/%d)...\n", asset.Name, attempt, maxRetries)
-			time.Sleep(time.Duration(attempt) * time.Second)
+			backoff := 2 * time.Duration(1<<uint(attempt-1)) * time.Second
+			ui.Printf("Retrying %s (attempt %d/%d) after %v...\n", asset.Name, attempt, maxRetries, backoff)
+			time.Sleep(backoff)
 		}
 		err = downloadReleaseAsset(asset, gh)
 		if err == nil {
 			return nil
 		}
 	}
-	return fmt.Errorf("failed after %d attempts: %w", maxRetries+1, err)
+	return fmt.Errorf("failed after %d attempts: %v", maxRetries+1, err)
 }
 
 func downloadReleaseAsset(asset github.ReleaseAsset, gh *github.Client) (err error) {

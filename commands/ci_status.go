@@ -145,9 +145,8 @@ func ciStatus(cmd *Command, args *Args) {
 			if verbose && len(response.Statuses) > 0 {
 				colorize := colorizeOutput(args.Flag.HasReceived("--color"), args.Flag.Value("--color"))
 				ciVerboseFormat(response.Statuses, args.Flag.Value("--format"), colorize)
-			} else {
-				ui.Printf("Timeout after %d minutes. Status: %s\n", flagWaitTimeout, state)
 			}
+			ui.Errorf("timed out waiting for CI status after %d minutes (current: %s)", flagWaitTimeout, state)
 			os.Exit(2)
 		}
 

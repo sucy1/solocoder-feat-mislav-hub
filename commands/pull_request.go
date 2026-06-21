@@ -285,21 +285,26 @@ of text is the title and the rest is the description.`, fullBase, fullHead))
 				headForMessage = head
 			}
 
-			placeholderTitle := ""
-			placeholderCommits := ""
+			placeholderTitle := "(no title)"
+			placeholderCommits := "_No commits yet._"
 
 			commits, _ := git.RefList(baseTracking, headForMessage)
 			if len(commits) >= 1 {
 				firstCommitMsg, _ := git.Show(commits[len(commits)-1])
-				placeholderTitle, _ = github.SplitTitleBody(firstCommitMsg)
+				titleFromCommit, _ := github.SplitTitleBody(firstCommitMsg)
+				if titleFromCommit != "" {
+					placeholderTitle = titleFromCommit
+				}
 
 				if len(commits) == 1 {
 					commitMsg, _ := git.Show(commits[0])
 					re := regexp.MustCompile(`\n(Co-authored-by|Signed-off-by):[^\n]+`)
-					placeholderCommits = re.ReplaceAllString(commitMsg, "")
+					placeholderCommits = strings.TrimSpace(re.ReplaceAllString(commitMsg, ""))
 				} else if len(commits) > 1 {
 					commitLogs, _ := git.Log(baseTracking, headForMessage)
-					placeholderCommits = strings.TrimSpace(commitLogs)
+					if trimmed := strings.TrimSpace(commitLogs); trimmed != "" {
+						placeholderCommits = trimmed
+					}
 				}
 			}
 

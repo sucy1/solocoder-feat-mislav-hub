@@ -623,7 +623,7 @@ text is the title and the rest is the description.`, project))
 	title, body, err := messageBuilder.Extract()
 	if err != nil {
 		messageBuilder.Cleanup()
-		utils.Check(fmt.Errorf("Issue creation cancelled: %w", err))
+		utils.Check(fmt.Errorf("Issue creation cancelled: %v", err))
 	}
 
 	if title == "" {

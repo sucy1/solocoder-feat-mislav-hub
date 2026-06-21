@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	syncpkg "sync"
 	"time"
 
 	"github.com/github/hub/v2/github"
@@ -21,7 +22,7 @@ release [--include-drafts] [--exclude-prereleases] [-L <LIMIT>] [-f <FORMAT>]
 release show [-f <FORMAT>] <TAG>
 release create [-dpoc] [-a <FILE>] [-m <MESSAGE>|-F <FILE>] [-t <TARGET>] <TAG>
 release edit [<options>] <TAG>
-release download <TAG> [-i <PATTERN>]
+release download <TAG> [-i <PATTERN>] [--parallel <N>]
 release delete <TAG>
 `,
 		Long: `Manage GitHub Releases for the current repository.
@@ -106,6 +107,11 @@ With no arguments, shows a list of existing releases.
 
 	-i, --include <PATTERN>
 		Filter the files in the release to those that match the glob <PATTERN>.
+
+	--parallel <N>
+		Download up to <N> assets in parallel (default: 3, maximum: 10).
+		Each asset shows its own progress bar. Failed downloads are retried
+		up to 2 times. Total elapsed time is displayed on completion.
 
 	-f, --format <FORMAT>
 		Pretty print releases using <FORMAT> (default: "%T%n"). See the "PRETTY
@@ -217,6 +223,7 @@ hub(1), git-tag(1)
 		Run: downloadRelease,
 		KnownFlags: `
 		-i, --include PATTERN
+		--parallel N
 		`,
 	}
 
@@ -395,8 +402,16 @@ func downloadRelease(cmd *Command, args *Args) {
 	release, err := gh.FetchRelease(project, tagName)
 	utils.Check(err)
 
+	parallel := args.Flag.Int("--parallel")
+	if parallel <= 0 {
+		parallel = 3
+	}
+	if parallel > 10 {
+		parallel = 10
+	}
+
 	hasPattern := args.Flag.HasReceived("--include")
-	found := false
+	var assetsToDownload []github.ReleaseAsset
 	for _, asset := range release.Assets {
 		if hasPattern {
 			isMatch, err := filepath.Match(args.Flag.Value("--include"), asset.Name)
@@ -405,14 +420,10 @@ func downloadRelease(cmd *Command, args *Args) {
 				continue
 			}
 		}
-
-		found = true
-		ui.Printf("Downloading %s ...\n", asset.Name)
-		err := downloadReleaseAsset(asset, gh)
-		utils.Check(err)
+		assetsToDownload = append(assetsToDownload, asset)
 	}
 
-	if !found && hasPattern {
+	if len(assetsToDownload) == 0 && hasPattern {
 		names := []string{}
 		for _, asset := range release.Assets {
 			names = append(names, asset.Name)
@@ -420,7 +431,76 @@ func downloadRelease(cmd *Command, args *Args) {
 		utils.Check(fmt.Errorf("the `--include` pattern did not match any available assets:\n%s", strings.Join(names, "\n")))
 	}
 
+	if len(assetsToDownload) == 0 {
+		ui.Println("No assets to download.")
+		args.NoForward()
+		return
+	}
+
+	startTime := time.Now()
+
+	if parallel == 1 || len(assetsToDownload) == 1 {
+		for _, asset := range assetsToDownload {
+			ui.Printf("Downloading %s ...\n", asset.Name)
+			err := downloadReleaseAssetWithRetry(asset, gh, 2)
+			utils.Check(err)
+		}
+	} else {
+		var wg syncpkg.WaitGroup
+		sem := make(chan struct{}, parallel)
+		errCh := make(chan error, len(assetsToDownload))
+		var mu syncpkg.Mutex
+		completed := 0
+
+		for _, asset := range assetsToDownload {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(a github.ReleaseAsset) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				err := downloadReleaseAssetWithRetry(a, gh, 2)
+				if err != nil {
+					errCh <- fmt.Errorf("%s: %w", a.Name, err)
+					return
+				}
+				mu.Lock()
+				completed++
+				ui.Printf("[%d/%d] Finished %s\n", completed, len(assetsToDownload), a.Name)
+				mu.Unlock()
+			}(asset)
+		}
+
+		wg.Wait()
+		close(errCh)
+
+		var errs []string
+		for e := range errCh {
+			errs = append(errs, e.Error())
+		}
+		if len(errs) > 0 {
+			utils.Check(fmt.Errorf("Some downloads failed:\n%s", strings.Join(errs, "\n")))
+		}
+	}
+
+	elapsed := time.Since(startTime)
+	ui.Printf("\nDownloaded %d asset(s) in %.2f seconds\n", len(assetsToDownload), elapsed.Seconds())
+
 	args.NoForward()
+}
+
+func downloadReleaseAssetWithRetry(asset github.ReleaseAsset, gh *github.Client, maxRetries int) error {
+	var err error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			ui.Printf("Retrying %s (attempt %d/%d)...\n", asset.Name, attempt, maxRetries)
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		err = downloadReleaseAsset(asset, gh)
+		if err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("failed after %d attempts: %w", maxRetries+1, err)
 }
 
 func downloadReleaseAsset(asset github.ReleaseAsset, gh *github.Client) (err error) {

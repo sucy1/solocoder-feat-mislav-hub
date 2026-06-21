@@ -20,6 +20,7 @@ pr checkout <PR-NUMBER> [<BRANCH>]
 pr show [-uc] [-f <FORMAT>] [-h <HEAD>]
 pr show [-uc] [-f <FORMAT>] <PR-NUMBER>
 pr merge [-d] [--squash | --rebase] <PR-NUMBER> [-m <MESSAGE> | -F <FILE>] [--head-sha <COMMIT-SHA>]
+pr create [-focpd] [-b <BASE>] [-h <HEAD>] [-r <REVIEWERS>] [-a <ASSIGNEES>] [-M <MILESTONE>] [-l <LABELS>] [--template <TEMPLATE>]
 `,
 		Long: `Manage GitHub Pull Requests for the current repository.
 
@@ -217,6 +218,31 @@ hub-issue(1), hub-pull-request(1), hub(1)
 		-d, --delete-branch
 		`,
 	}
+
+	cmdCreatePr = &Command{
+		Key: "create",
+		Run: pullRequest,
+		KnownFlags: `
+		-f, --force
+		-m, --message MSG
+		-F, --file FILE
+		-e, --edit
+		--no-edit
+		--template TEMPLATE
+		-i, --issue ISSUE
+		-o, --browse
+		-c, --copy
+		-p, --push
+		-b, --base BASE
+		-h, --head HEAD
+		-r, --reviewer USERS
+		-a, --assign USERS
+		-M, --milestone NAME
+		-l, --labels LIST
+		-d, --draft
+		--no-maintainer-edits
+		`,
+	}
 )
 
 func init() {
@@ -224,6 +250,7 @@ func init() {
 	cmdPr.Use(cmdCheckoutPr)
 	cmdPr.Use(cmdShowPr)
 	cmdPr.Use(cmdMergePr)
+	cmdPr.Use(cmdCreatePr)
 	CmdRunner.Use(cmdPr)
 }
 

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -31,6 +32,74 @@ func ReadTemplate(kind, workdir string) (body string, err error) {
 		body, err = readContentsFromFile(path)
 	}
 	return
+}
+
+func ListTemplates(kind, workdir string) ([]string, error) {
+	var templates []string
+	seen := make(map[string]bool)
+
+	searchDirs := []string{
+		filepath.Join(workdir, githubTemplateDir, kind+"s"),
+		filepath.Join(workdir, githubTemplateDir),
+		filepath.Join(workdir, docsDir),
+		workdir,
+	}
+
+	for _, dir := range searchDirs {
+		files, err := ioutil.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, file := range files {
+			if file.IsDir() {
+				continue
+			}
+			name := file.Name()
+			lowerName := strings.ToLower(name)
+			if !strings.Contains(lowerName, strings.ToLower(kind)) {
+				continue
+			}
+			if !strings.HasSuffix(lowerName, ".md") && !strings.HasSuffix(lowerName, ".txt") {
+				continue
+			}
+			baseName := strings.TrimSuffix(name, ".md")
+			baseName = strings.TrimSuffix(baseName, ".txt")
+			if !seen[baseName] {
+				seen[baseName] = true
+				templates = append(templates, baseName)
+			}
+		}
+	}
+
+	sort.Strings(templates)
+	return templates, nil
+}
+
+func ReadTemplateByName(kind, templateName, workdir string) (string, error) {
+	searchDirs := []string{
+		filepath.Join(workdir, githubTemplateDir, kind+"s"),
+		filepath.Join(workdir, githubTemplateDir),
+		filepath.Join(workdir, docsDir),
+		workdir,
+	}
+
+	for _, dir := range searchDirs {
+		for _, ext := range []string{".md", ".txt", ""} {
+			path := filepath.Join(dir, templateName+ext)
+			if _, err := os.Stat(path); err == nil {
+				return readContentsFromFile(path)
+			}
+		}
+	}
+
+	return "", fmt.Errorf("template not found: %s", templateName)
+}
+
+func ReplaceTemplatePlaceholders(content string, placeholders map[string]string) string {
+	for key, value := range placeholders {
+		content = strings.ReplaceAll(content, "{{"+key+"}}", value)
+	}
+	return content
 }
 
 type sortedFiles []os.FileInfo

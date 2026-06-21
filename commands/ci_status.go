@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/github/hub/v2/git"
 	"github.com/github/hub/v2/github"
@@ -13,7 +14,7 @@ import (
 
 var cmdCiStatus = &Command{
 	Run:   ciStatus,
-	Usage: "ci-status [-v] [<COMMIT>]",
+	Usage: "ci-status [-v] [--wait] [--wait-timeout <MINUTES>] [<COMMIT>]",
 	Long: `Display status of GitHub checks for a commit.
 
 ## Options:
@@ -33,6 +34,13 @@ var cmdCiStatus = &Command{
 
 		%t: name of the status check
 
+	--wait
+		Poll until all checks complete or timeout. Polls every 10 seconds.
+
+	--wait-timeout <MINUTES>
+		Maximum time to wait when using ''--wait'' in minutes (default: 30).
+		On timeout, exits with status code 2.
+
 	--color[=<WHEN>]
 		Enable colored output even if stdout is not a terminal. <WHEN> can be one
 		of "always" (default for ''--color''), "never", or "auto" (default).
@@ -44,7 +52,7 @@ Possible outputs and exit statuses:
 
 - success, neutral: 0
 - failure, error, action_required, cancelled, timed_out: 1
-- pending: 2
+- pending: 2 (or when --wait times out)
 
 ## See also:
 
@@ -96,14 +104,30 @@ func ciStatus(cmd *Command, args *Args) {
 	}
 	utils.Check(err)
 
+	flagWait := args.Flag.Bool("--wait")
+	flagWaitTimeout := args.Flag.Int("--wait-timeout")
+	if flagWaitTimeout <= 0 {
+		flagWaitTimeout = 30
+	}
+
 	if args.Noop {
 		ui.Printf("Would request CI status for %s\n", sha)
-	} else {
-		gh := github.NewClient(project.Host)
-		response, err := gh.FetchCIStatus(project, sha)
+		return
+	}
+
+	gh := github.NewClient(project.Host)
+
+	var response *github.CIStatusResponse
+	var state string
+
+	deadline := time.Now().Add(time.Duration(flagWaitTimeout) * time.Minute)
+	pollInterval := 10 * time.Second
+
+	for {
+		response, err = gh.FetchCIStatus(project, sha)
 		utils.Check(err)
 
-		state := ""
+		state = ""
 		if len(response.Statuses) > 0 {
 			for _, status := range response.Statuses {
 				if checkSeverity(status.State) > checkSeverity(state) {
@@ -112,32 +136,50 @@ func ciStatus(cmd *Command, args *Args) {
 			}
 		}
 
-		var exitCode int
-		switch state {
-		case "success", "neutral":
-			exitCode = 0
-		case "failure", "error", "action_required", "cancelled", "timed_out":
-			exitCode = 1
-		case "pending":
-			exitCode = 2
-		default:
-			exitCode = 3
+		if !flagWait || state != "pending" {
+			break
 		}
 
-		verbose := args.Flag.Bool("--verbose") || args.Flag.HasReceived("--format")
-		if verbose && len(response.Statuses) > 0 {
-			colorize := colorizeOutput(args.Flag.HasReceived("--color"), args.Flag.Value("--color"))
-			ciVerboseFormat(response.Statuses, args.Flag.Value("--format"), colorize)
-		} else {
-			if state != "" {
-				ui.Println(state)
+		if time.Now().After(deadline) {
+			verbose := args.Flag.Bool("--verbose") || args.Flag.HasReceived("--format")
+			if verbose && len(response.Statuses) > 0 {
+				colorize := colorizeOutput(args.Flag.HasReceived("--color"), args.Flag.Value("--color"))
+				ciVerboseFormat(response.Statuses, args.Flag.Value("--format"), colorize)
 			} else {
-				ui.Println("no status")
+				ui.Printf("Timeout after %d minutes. Status: %s\n", flagWaitTimeout, state)
 			}
+			os.Exit(2)
 		}
 
-		os.Exit(exitCode)
+		ui.Printf("Waiting for CI checks... status: %s (next check in %ds)\n", state, pollInterval/time.Second)
+		time.Sleep(pollInterval)
 	}
+
+	var exitCode int
+	switch state {
+	case "success", "neutral":
+		exitCode = 0
+	case "failure", "error", "action_required", "cancelled", "timed_out":
+		exitCode = 1
+	case "pending":
+		exitCode = 2
+	default:
+		exitCode = 3
+	}
+
+	verbose := args.Flag.Bool("--verbose") || args.Flag.HasReceived("--format")
+	if verbose && len(response.Statuses) > 0 {
+		colorize := colorizeOutput(args.Flag.HasReceived("--color"), args.Flag.Value("--color"))
+		ciVerboseFormat(response.Statuses, args.Flag.Value("--format"), colorize)
+	} else {
+		if state != "" {
+			ui.Println(state)
+		} else {
+			ui.Println("no status")
+		}
+	}
+
+	os.Exit(exitCode)
 }
 
 func ciVerboseFormat(statuses []github.CIStatus, formatString string, colorize bool) {

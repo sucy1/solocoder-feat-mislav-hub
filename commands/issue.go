@@ -19,7 +19,7 @@ var (
 		Usage: `
 issue [-a <ASSIGNEE>] [-c <CREATOR>] [-@ <USER>] [-s <STATE>] [-f <FORMAT>] [-M <MILESTONE>] [-l <LABELS>] [-d <DATE>] [-o <SORT_KEY> [-^]] [-L <LIMIT>]
 issue show [-f <FORMAT>] <NUMBER>
-issue create [-oc] [-m <MESSAGE>|-F <FILE>] [--edit] [-a <USERS>] [-M <MILESTONE>] [-l <LABELS>]
+issue create [-oc] [-m <MESSAGE>|-F <FILE>] [--edit] [--template <TEMPLATE>] [-a <USERS>] [-M <MILESTONE>] [-l <LABELS>]
 issue update <NUMBER> [-m <MESSAGE>|-F <FILE>] [--edit] [-a <USERS>] [-M <MILESTONE>] [-l <LABELS>] [-s <STATE>]
 issue labels [--color]
 issue transfer <NUMBER> <REPO>
@@ -130,7 +130,9 @@ With no arguments, show a list of open issues.
 		blank line in-between.
 
 		When neither ''--message'' nor ''--file'' were supplied to ''issue create'', a
-		text editor will open to author the title and description in.
+		text editor will open to author the title and description in, pre-populated
+		with the issue template if one exists. If the editor is cancelled (exits
+		with non-zero status), the command will terminate without creating an issue.
 
 	-F, --file <FILE>
 		Read the issue title and description from <FILE>. Pass "-" to read from
@@ -139,6 +141,11 @@ With no arguments, show a list of open issues.
 	-e, --edit
 		Open the issue title and description in a text editor before submitting.
 		This can be used in combination with ''--message'' or ''--file''.
+
+	--template <TEMPLATE>
+		Use the specified issue template file. If the template is not found,
+		available templates will be listed. The editor will open pre-populated
+		with the template content.
 
 	-o, --browse
 		Open the new issue in a web browser.
@@ -208,6 +215,7 @@ hub-pr(1), hub(1)
 		-o, --browse
 		-c, --copy
 		-e, --edit
+		--template TEMPLATE
 `,
 	}
 
@@ -574,7 +582,25 @@ text is the title and the rest is the description.`, project))
 
 	flagIssueEdit := args.Flag.Bool("--edit")
 	flagIssueMessage := args.Flag.AllValues("--message")
-	if len(flagIssueMessage) > 0 {
+	flagIssueTemplate := args.Flag.Value("--template")
+
+	if flagIssueTemplate != "" {
+		workdir, workdirErr := git.WorkdirName()
+		if workdirErr == nil && workdir != "" {
+			templateContent, templateErr := github.ReadTemplateByName(github.IssueTemplate, flagIssueTemplate, workdir)
+			if templateErr != nil {
+				availableTemplates, listErr := github.ListTemplates(github.IssueTemplate, workdir)
+				if listErr == nil && len(availableTemplates) > 0 {
+					utils.Check(fmt.Errorf("Template '%s' not found.\n\nAvailable issue templates:\n%s",
+						flagIssueTemplate, strings.Join(availableTemplates, "\n")))
+				} else {
+					utils.Check(fmt.Errorf("Template '%s' not found.", flagIssueTemplate))
+				}
+			}
+			messageBuilder.Message = templateContent
+			messageBuilder.Edit = true
+		}
+	} else if len(flagIssueMessage) > 0 {
 		messageBuilder.Message = strings.Join(flagIssueMessage, "\n\n")
 		messageBuilder.Edit = flagIssueEdit
 	} else if args.Flag.HasReceived("--file") {
@@ -592,13 +618,16 @@ text is the title and the rest is the description.`, project))
 				messageBuilder.Message = template
 			}
 		}
-
 	}
 
 	title, body, err := messageBuilder.Extract()
-	utils.Check(err)
+	if err != nil {
+		messageBuilder.Cleanup()
+		utils.Check(fmt.Errorf("Issue creation cancelled: %w", err))
+	}
 
 	if title == "" {
+		messageBuilder.Cleanup()
 		utils.Check(fmt.Errorf("Aborting creation due to empty issue title"))
 	}
 

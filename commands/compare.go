@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/github/hub/v2/git"
 	"github.com/github/hub/v2/github"
 	"github.com/github/hub/v2/utils"
 )
@@ -107,6 +108,7 @@ func compare(command *Command, args *Args) {
 		if flagCompareBase == r {
 			utils.Check(fmt.Errorf("the branch to compare '%s' is the same as --base", r))
 		} else if flagCompareBase != "" {
+			validateLocalBranch(flagCompareBase)
 			r = fmt.Sprintf("%s...%s", flagCompareBase, r)
 		}
 	} else {
@@ -114,6 +116,7 @@ func compare(command *Command, args *Args) {
 			utils.Check(command.UsageError(""))
 		} else {
 			r = parseCompareRange(args.RemoveParam(args.ParamsSize() - 1))
+			validateCompareRange(r)
 			if !args.IsParamsEmpty() {
 				owner := args.RemoveParam(args.ParamsSize() - 1)
 				mainProject = github.NewProject(owner, mainProject.Name, mainProject.Host)
@@ -127,6 +130,36 @@ func compare(command *Command, args *Args) {
 	flagCompareURLOnly := args.Flag.Bool("--url")
 	flagCompareCopy := args.Flag.Bool("--copy")
 	printBrowseOrCopy(args, url, !flagCompareURLOnly && !flagCompareCopy, flagCompareCopy)
+}
+
+func validateLocalBranch(branch string) {
+	if strings.Contains(branch, ":") {
+		parts := strings.SplitN(branch, ":", 2)
+		branch = parts[1]
+	}
+	if _, err := git.Ref(branch); err != nil {
+		localBranches, branchesErr := git.LocalBranches()
+		if branchesErr == nil && len(localBranches) > 0 {
+			utils.Check(fmt.Errorf("branch '%s' does not exist locally.\n\nAvailable local branches:\n%s",
+				branch, strings.Join(localBranches, "\n")))
+		} else {
+			utils.Check(fmt.Errorf("branch '%s' does not exist locally.", branch))
+		}
+	}
+}
+
+func validateCompareRange(r string) {
+	if strings.Contains(r, "...") {
+		parts := strings.SplitN(r, "...", 2)
+		validateLocalBranch(parts[0])
+		validateLocalBranch(parts[1])
+	} else if strings.Contains(r, "..") {
+		parts := strings.SplitN(r, "..", 2)
+		validateLocalBranch(parts[0])
+		validateLocalBranch(parts[1])
+	} else {
+		validateLocalBranch(r)
+	}
 }
 
 func parseCompareRange(r string) string {

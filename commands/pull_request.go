@@ -16,7 +16,7 @@ import (
 var cmdPullRequest = &Command{
 	Run: pullRequest,
 	Usage: `
-pull-request [-focpd] [-b <BASE>] [-h <HEAD>] [-r <REVIEWERS> ] [-a <ASSIGNEES>] [-M <MILESTONE>] [-l <LABELS>]
+pull-request [-focpd] [-b <BASE>] [-h <HEAD>] [-r <REVIEWERS> ] [-a <ASSIGNEES>] [-M <MILESTONE>] [-l <LABELS>] [--template <TEMPLATE>]
 pull-request -m <MESSAGE> [--edit]
 pull-request -F <FILE> [--edit]
 pull-request -i <ISSUE>
@@ -49,6 +49,15 @@ pull-request -i <ISSUE>
 	-e, --edit
 		Open the pull request title and description in a text editor before
 		submitting. This can be used in combination with ''--message'' or ''--file''.
+
+	--template <TEMPLATE>
+		Use the specified pull request template file. The following placeholders
+		will be replaced automatically:
+		- ''{{branch}}'': the head branch name
+		- ''{{title}}'': the title from the first commit
+		- ''{{commits}}'': the list of commits between base and head
+
+		If the template is not found, available templates will be listed.
 
 	-i, --issue <ISSUE>
 		Convert <ISSUE> (referenced by its number) to a pull request.
@@ -252,11 +261,57 @@ of text is the title and the rest is the description.`, fullBase, fullHead))
 	flagPullRequestMessage := args.Flag.AllValues("--message")
 	flagPullRequestEdit := args.Flag.Bool("--edit")
 	flagPullRequestIssue := args.Flag.Value("--issue")
+	flagPullRequestTemplate := args.Flag.Value("--template")
 	if !args.Flag.HasReceived("--issue") && args.ParamsSize() > 0 {
 		flagPullRequestIssue = parsePullRequestIssueNumber(args.GetParam(0))
 	}
 
-	if len(flagPullRequestMessage) > 0 {
+	if flagPullRequestTemplate != "" {
+		workdir, workdirErr := git.WorkdirName()
+		if workdirErr == nil && workdir != "" {
+			templateContent, templateErr := github.ReadTemplateByName(github.PullRequestTemplate, flagPullRequestTemplate, workdir)
+			if templateErr != nil {
+				availableTemplates, listErr := github.ListTemplates(github.PullRequestTemplate, workdir)
+				if listErr == nil && len(availableTemplates) > 0 {
+					utils.Check(fmt.Errorf("Template '%s' not found.\n\nAvailable pull request templates:\n%s",
+						flagPullRequestTemplate, strings.Join(availableTemplates, "\n")))
+				} else {
+					utils.Check(fmt.Errorf("Template '%s' not found.", flagPullRequestTemplate))
+				}
+			}
+
+			headForMessage := headTracking
+			if flagPullRequestPush {
+				headForMessage = head
+			}
+
+			placeholderTitle := ""
+			placeholderCommits := ""
+
+			commits, _ := git.RefList(baseTracking, headForMessage)
+			if len(commits) >= 1 {
+				firstCommitMsg, _ := git.Show(commits[len(commits)-1])
+				placeholderTitle, _ = github.SplitTitleBody(firstCommitMsg)
+
+				if len(commits) == 1 {
+					commitMsg, _ := git.Show(commits[0])
+					re := regexp.MustCompile(`\n(Co-authored-by|Signed-off-by):[^\n]+`)
+					placeholderCommits = re.ReplaceAllString(commitMsg, "")
+				} else if len(commits) > 1 {
+					commitLogs, _ := git.Log(baseTracking, headForMessage)
+					placeholderCommits = strings.TrimSpace(commitLogs)
+				}
+			}
+
+			placeholders := map[string]string{
+				"branch":  head,
+				"title":   placeholderTitle,
+				"commits": placeholderCommits,
+			}
+			messageBuilder.Message = github.ReplaceTemplatePlaceholders(templateContent, placeholders)
+			messageBuilder.Edit = true
+		}
+	} else if len(flagPullRequestMessage) > 0 {
 		messageBuilder.Message = strings.Join(flagPullRequestMessage, "\n\n")
 		messageBuilder.Edit = flagPullRequestEdit
 	} else if args.Flag.HasReceived("--file") {

@@ -299,7 +299,9 @@ of text is the title and the rest is the description.`, fullBase, fullHead))
 				if len(commits) == 1 {
 					commitMsg, _ := git.Show(commits[0])
 					re := regexp.MustCompile(`\n(Co-authored-by|Signed-off-by):[^\n]+`)
-					placeholderCommits = strings.TrimSpace(re.ReplaceAllString(commitMsg, ""))
+					if trimmed := strings.TrimSpace(re.ReplaceAllString(commitMsg, "")); trimmed != "" {
+						placeholderCommits = trimmed
+					}
 				} else if len(commits) > 1 {
 					commitLogs, _ := git.Log(baseTracking, headForMessage)
 					if trimmed := strings.TrimSpace(commitLogs); trimmed != "" {

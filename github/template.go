@@ -97,6 +97,9 @@ func ReadTemplateByName(kind, templateName, workdir string) (string, error) {
 
 func ReplaceTemplatePlaceholders(content string, placeholders map[string]string) string {
 	for key, value := range placeholders {
+		if value == "" {
+			value = fmt.Sprintf("<!-- no value for %s -->", key)
+		}
 		content = strings.ReplaceAll(content, "{{"+key+"}}", value)
 	}
 	return content
